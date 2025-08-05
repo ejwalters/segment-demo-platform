@@ -6,6 +6,15 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
 
+// Utility function to generate unique identifiers for deployments
+// Format: timestamp-randomId (e.g., "1703123456789-abc123")
+// This ensures each deployment has a unique name to avoid conflicts
+function generateUniqueId(): string {
+  const timestamp = Date.now();
+  const randomId = Math.random().toString(36).substring(2, 8);
+  return `${timestamp}-${randomId}`;
+}
+
 // Initialize OpenAI client only when needed
 let openai: OpenAI | null = null;
 
@@ -125,7 +134,10 @@ export async function generateDemo(params: DemoGenerationParams): Promise<DemoRe
     // Create GitHub repository (skip for now)
     let githubRepoUrl = '';
     try {
-      githubRepoUrl = await createGitHubRepo(customerName, githubToken);
+      // Generate unique identifier for GitHub repo name
+      const uniqueSuffix = generateUniqueId();
+
+      githubRepoUrl = await createGitHubRepo(customerName, githubToken, uniqueSuffix);
       // Initialize git and push code
       await initializeGitAndPush(demoDir, githubRepoUrl, githubToken);
     } catch (error) {
@@ -137,13 +149,22 @@ export async function generateDemo(params: DemoGenerationParams): Promise<DemoRe
     let frontendUrl = '';
     let backendUrl = '';
     try {
-      frontendUrl = await deployToVercel(frontendDir, `segment-demo-${slugify(customerName).toLowerCase()}-frontend`, 'nextjs');
-      backendUrl = await deployToVercel(backendDir, `segment-demo-${slugify(customerName).toLowerCase()}-backend`, 'node');
+      // Generate unique identifier for deployment names
+      const uniqueSuffix = generateUniqueId();
+
+      const frontendProjectName = `segment-demo-${slugify(customerName).toLowerCase()}-frontend-${uniqueSuffix}`;
+      const backendProjectName = `segment-demo-${slugify(customerName).toLowerCase()}-backend-${uniqueSuffix}`;
+
+      console.log(`🚀 Deploying frontend with project name: ${frontendProjectName}`);
+      console.log(`🚀 Deploying backend with project name: ${backendProjectName}`);
+
+      frontendUrl = await deployToVercel(frontendDir, frontendProjectName, 'nextjs');
+      backendUrl = await deployToVercel(backendDir, backendProjectName, 'node');
     } catch (error) {
       console.log('⚠️ Vercel deployment failed, using placeholder URLs:', error instanceof Error ? error.message : 'Unknown error');
-      const timestamp = Date.now().toString(36);
-      frontendUrl = `https://segment-demo-${slugify(customerName).toLowerCase()}-frontend-${timestamp}.vercel.app`;
-      backendUrl = `https://segment-demo-${slugify(customerName).toLowerCase()}-backend-${timestamp}.vercel.app`;
+      const uniqueSuffix = generateUniqueId();
+      frontendUrl = `https://segment-demo-${slugify(customerName).toLowerCase()}-frontend-${uniqueSuffix}.vercel.app`;
+      backendUrl = `https://segment-demo-${slugify(customerName).toLowerCase()}-backend-${uniqueSuffix}.vercel.app`;
     }
 
     return {
@@ -1110,9 +1131,10 @@ PORT=3001
   fs.writeFileSync(path.join(backendDir, '.env.example'), envExample);
 }
 
-async function createGitHubRepo(customerName: string, githubToken: string): Promise<string> {
+async function createGitHubRepo(customerName: string, githubToken: string, uniqueSuffix?: string): Promise<string> {
   const octokit = new Octokit({ auth: githubToken });
-  const repoName = `segment-demo-${slugify(customerName).toLowerCase()}`;
+  const baseRepoName = `segment-demo-${slugify(customerName).toLowerCase()}`;
+  const repoName = uniqueSuffix ? `${baseRepoName}-${uniqueSuffix}` : baseRepoName;
 
   try {
     const repo = await octokit.repos.createForAuthenticatedUser({
@@ -1154,6 +1176,12 @@ async function initializeGitAndPush(demoDir: string, githubRepoUrl: string, gith
   }
 }
 
+// Deploy to Vercel with unique project names
+// This function:
+// 1. Creates a unique project name using customer name + unique ID
+// 2. Creates the project via Vercel API if it doesn't exist
+// 3. Deploys the code using Vercel CLI
+// 4. Returns the deployment URL
 async function deployToVercel(projectDir: string, projectName: string, framework: string): Promise<string> {
   try {
     const vercelToken = process.env.VERCEL_TOKEN;
@@ -1165,9 +1193,18 @@ async function deployToVercel(projectDir: string, projectName: string, framework
       return `https://${projectName}-${deploymentId}.vercel.app`;
     }
 
-    // Create a vercel.json configuration file
+    // Clean up project name for Vercel
+    const cleanProjectName = projectName
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .substring(0, 63); // Vercel allows up to 63 characters for project names
+
+    // Create a vercel.json configuration file with project name
     const vercelConfig = {
       version: 2,
+      name: cleanProjectName,
       builds: [
         {
           src: framework === 'nextjs' ? 'package.json' : 'server.js',
@@ -1184,13 +1221,35 @@ async function deployToVercel(projectDir: string, projectName: string, framework
 
     fs.writeFileSync(path.join(projectDir, 'vercel.json'), JSON.stringify(vercelConfig, null, 2));
 
-    // Clean up project name for Vercel
-    const cleanProjectName = projectName
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-      .substring(0, 50); // Limit length
+    // First, try to create the project using Vercel API
+    console.log(`🔧 Creating Vercel project via API: ${cleanProjectName}`);
+    try {
+      const createProjectUrl = teamId
+        ? `https://api.vercel.com/v9/teams/${teamId}/projects`
+        : 'https://api.vercel.com/v9/projects';
+
+      const createResponse = await fetch(createProjectUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${vercelToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: cleanProjectName,
+          framework: framework === 'nextjs' ? 'nextjs' : 'node'
+        })
+      });
+
+      if (createResponse.ok) {
+        console.log(`✅ Project created successfully: ${cleanProjectName}`);
+      } else if (createResponse.status === 409) {
+        console.log(`ℹ️  Project already exists: ${cleanProjectName}`);
+      } else {
+        console.log(`⚠️  Project creation failed: ${createResponse.status} ${createResponse.statusText}`);
+      }
+    } catch (error) {
+      console.log(`⚠️  Project creation API call failed: ${error}`);
+    }
 
     // Use Vercel CLI to deploy
     const deployCommand = [
@@ -1202,8 +1261,11 @@ async function deployToVercel(projectDir: string, projectName: string, framework
       deployCommand.push('--scope', teamId);
     }
 
-    // Set project name via environment variable
-    const env = { ...process.env, VERCEL_PROJECT_NAME: cleanProjectName };
+    console.log(`📦 Vercel deployment command: ${deployCommand.join(' ')}`);
+    console.log(`📁 Working directory: ${projectDir}`);
+    console.log(`🏷️  Project name: ${cleanProjectName}`);
+
+    const env = { ...process.env };
 
     const result = spawnSync('npx', deployCommand, {
       cwd: projectDir,
@@ -1213,17 +1275,23 @@ async function deployToVercel(projectDir: string, projectName: string, framework
     });
 
     if (result.status !== 0) {
-      console.error('Vercel deployment failed:', result.stderr);
+      console.error('❌ Vercel deployment failed:', result.stderr);
+      console.error('📤 Vercel stdout:', result.stdout);
       throw new Error(`Vercel deployment failed: ${result.stderr}`);
     }
 
     // Extract the deployment URL from the output
     const output = result.stdout;
+    console.log('✅ Vercel deployment successful');
+    console.log('📤 Vercel output:', output);
+
     const urlMatch = output.match(/https:\/\/[^\s]+/);
 
     if (urlMatch) {
+      console.log('🔗 Extracted URL:', urlMatch[0]);
       return urlMatch[0];
     } else {
+      console.error('❌ Could not extract URL from Vercel output');
       throw new Error('Could not extract deployment URL from Vercel output');
     }
 
