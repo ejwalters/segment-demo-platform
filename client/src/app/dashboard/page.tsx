@@ -200,9 +200,41 @@ export default function Dashboard() {
         }
     };
 
-    const handleDeleteDemo = async (demoId: string) => {
+    const handleDeleteVercelDeployments = async (demoId: string) => {
         try {
-            console.log('🗑️ Starting delete process for demo:', demoId);
+            console.log('🗑️ Starting Vercel deployment deletion for demo:', demoId);
+            setError(null);
+
+            console.log('🗑️ Making Vercel deletion API call...');
+            const response = await fetch(`/api/delete-vercel-deployments?demoId=${encodeURIComponent(demoId)}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            console.log('🗑️ Vercel deletion response status:', response.status);
+
+            const result = await response.json();
+            console.log('🗑️ Vercel deletion response result:', result);
+
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to delete Vercel deployments');
+            }
+
+            console.log('🗑️ Vercel deployments deleted successfully');
+            alert('Vercel deployments deleted successfully!');
+
+        } catch (err) {
+            console.error('🗑️ Error deleting Vercel deployments:', err);
+            setError(err instanceof Error ? err.message : 'Failed to delete Vercel deployments');
+            alert(`Failed to delete Vercel deployments: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+    };
+
+    const handleDeleteDemoData = async (demoId: string) => {
+        try {
+            console.log('🗑️ Starting demo data deletion for demo:', demoId);
             setError(null);
 
             // Get the user's GitHub token from the session
@@ -212,7 +244,51 @@ export default function Dashboard() {
                 return;
             }
 
-            console.log('🗑️ Making delete API call...');
+            console.log('🗑️ Making demo data deletion API call...');
+            const response = await fetch(`/api/delete-demo-data?demoId=${encodeURIComponent(demoId)}&githubToken=${encodeURIComponent(session.provider_token)}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+            });
+
+            console.log('🗑️ Demo data deletion response status:', response.status);
+
+            const result = await response.json();
+            console.log('🗑️ Demo data deletion response result:', result);
+
+            if (!response.ok) {
+                throw new Error(result.error || 'Failed to delete demo data');
+            }
+
+            console.log('🗑️ Refreshing demos list...');
+            // Refresh the demos list
+            await fetchDemos(user.id);
+
+            console.log('🗑️ Demo data deleted successfully');
+            alert('Demo data deleted successfully!');
+
+        } catch (err) {
+            console.error('🗑️ Error deleting demo data:', err);
+            setError(err instanceof Error ? err.message : 'Failed to delete demo data');
+            alert(`Failed to delete demo data: ${err instanceof Error ? err.message : 'Unknown error'}`);
+        }
+    };
+
+    // Legacy function for backward compatibility
+    const handleDeleteDemo = async (demoId: string) => {
+        try {
+            console.log('🗑️ Starting legacy delete process for demo:', demoId);
+            setError(null);
+
+            // Get the user's GitHub token from the session
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session?.provider_token) {
+                setError('GitHub access token not found. Please sign in with GitHub again.');
+                return;
+            }
+
+            console.log('🗑️ Making legacy delete API call...');
             const response = await fetch(`/api/delete-demo?demoId=${encodeURIComponent(demoId)}&githubToken=${encodeURIComponent(session.provider_token)}`, {
                 method: 'DELETE',
                 headers: {
@@ -220,11 +296,10 @@ export default function Dashboard() {
                 },
             });
 
-            console.log('🗑️ Delete response status:', response.status);
-            console.log('🗑️ Delete response headers:', Object.fromEntries(response.headers.entries()));
+            console.log('🗑️ Legacy delete response status:', response.status);
 
             const result = await response.json();
-            console.log('🗑️ Delete response result:', result);
+            console.log('🗑️ Legacy delete response result:', result);
 
             if (!response.ok) {
                 throw new Error(result.error || 'Failed to delete demo');
@@ -374,6 +449,8 @@ export default function Dashboard() {
                             demos={demos}
                             onRefresh={() => fetchDemos(user.id)}
                             onDelete={handleDeleteDemo}
+                            onDeleteVercelDeployments={handleDeleteVercelDeployments}
+                            onDeleteDemoData={handleDeleteDemoData}
                         />
                     </div>
                 </div>

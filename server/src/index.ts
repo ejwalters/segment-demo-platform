@@ -137,18 +137,18 @@ app.get('/demos/:userId', async (req, res) => {
     }
 });
 
-// Delete demo
-app.delete('/delete-demo', async (req, res) => {
+// Delete Vercel deployments only
+app.delete('/delete-vercel-deployments', async (req, res) => {
     try {
-        const { demoId, githubToken } = req.query;
+        const { demoId } = req.query;
 
-        if (!demoId || !githubToken) {
+        if (!demoId) {
             return res.status(400).json({
-                error: 'Demo ID and GitHub token are required'
+                error: 'Demo ID is required'
             });
         }
 
-        console.log(`🗑️ Deleting demo: ${demoId}`);
+        console.log(`🗑️ Deleting Vercel deployments for demo: ${demoId}`);
 
         // Get demo details from database
         const { data: demo, error: fetchError } = await supabase
@@ -166,6 +166,126 @@ app.delete('/delete-demo', async (req, res) => {
         // Delete from Vercel (if URLs exist)
         if (demo.frontend_url || demo.backend_url) {
             console.log('🗑️ Attempting to delete Vercel deployments...');
+            console.log('🔗 Frontend URL:', demo.frontend_url);
+            console.log('🔗 Backend URL:', demo.backend_url);
+            try {
+                await deleteVercelDeployments(demo);
+                console.log('✅ Vercel deployments deleted successfully');
+                res.json({ success: true, message: 'Vercel deployments deleted successfully' });
+            } catch (vercelError) {
+                console.error('❌ Error deleting Vercel deployments:', vercelError);
+                res.status(500).json({
+                    error: 'Failed to delete Vercel deployments',
+                    details: vercelError instanceof Error ? vercelError.message : 'Unknown error'
+                });
+            }
+        } else {
+            console.log('ℹ️ No Vercel URLs found, skipping Vercel deletion');
+            res.json({ success: true, message: 'No Vercel deployments found' });
+        }
+
+    } catch (error) {
+        console.error('Error deleting Vercel deployments:', error);
+        res.status(500).json({
+            error: 'Failed to delete Vercel deployments',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+});
+
+// Delete GitHub repository and demo from database
+app.delete('/delete-demo-data', async (req, res) => {
+    try {
+        const { demoId, githubToken } = req.query;
+
+        if (!demoId) {
+            return res.status(400).json({
+                error: 'Demo ID is required'
+            });
+        }
+
+        console.log(`🗑️ Deleting demo data: ${demoId}`);
+
+        // Get demo details from database
+        const { data: demo, error: fetchError } = await supabase
+            .from('demos')
+            .select('*')
+            .eq('id', demoId)
+            .single();
+
+        if (fetchError || !demo) {
+            return res.status(404).json({
+                error: 'Demo not found'
+            });
+        }
+
+        // Delete from GitHub (if repo URL exists and token provided)
+        if (demo.github_repo_url && githubToken) {
+            console.log('🗑️ Attempting to delete GitHub repository...');
+            console.log('🔗 GitHub repo URL:', demo.github_repo_url);
+            try {
+                await deleteGitHubRepo(demo.github_repo_url, githubToken as string);
+                console.log('✅ GitHub repository deleted successfully');
+            } catch (githubError) {
+                console.error('❌ Error deleting GitHub repository:', githubError);
+                // Continue with deletion even if GitHub fails
+            }
+        } else {
+            console.log('ℹ️ No GitHub repo URL or token found, skipping GitHub deletion');
+        }
+
+        // Delete from database
+        const { error: deleteError } = await supabase
+            .from('demos')
+            .delete()
+            .eq('id', demoId);
+
+        if (deleteError) {
+            throw deleteError;
+        }
+
+        res.json({ success: true, message: 'Demo data deleted successfully' });
+
+    } catch (error) {
+        console.error('Error deleting demo data:', error);
+        res.status(500).json({
+            error: 'Failed to delete demo data',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+});
+
+// Legacy endpoint - delete everything (for backward compatibility)
+app.delete('/delete-demo', async (req, res) => {
+    try {
+        const { demoId, githubToken } = req.query;
+
+        if (!demoId || !githubToken) {
+            return res.status(400).json({
+                error: 'Demo ID and GitHub token are required'
+            });
+        }
+
+        console.log(`🗑️ Deleting demo (legacy): ${demoId}`);
+
+        // Get demo details from database
+        const { data: demo, error: fetchError } = await supabase
+            .from('demos')
+            .select('*')
+            .eq('id', demoId)
+            .single();
+
+        if (fetchError || !demo) {
+            return res.status(404).json({
+                error: 'Demo not found'
+            });
+        }
+
+        // Delete from Vercel (if URLs exist)
+        if (demo.frontend_url || demo.backend_url) {
+            console.log('🗑️ Attempting to delete Vercel deployments...');
+            console.log('🔗 Frontend URL:', demo.frontend_url);
+            console.log('🔗 Backend URL:', demo.backend_url);
             try {
                 await deleteVercelDeployments(demo);
                 console.log('✅ Vercel deployments deleted successfully');
@@ -180,6 +300,7 @@ app.delete('/delete-demo', async (req, res) => {
         // Delete from GitHub (if repo URL exists)
         if (demo.github_repo_url && githubToken) {
             console.log('🗑️ Attempting to delete GitHub repository...');
+            console.log('🔗 GitHub repo URL:', demo.github_repo_url);
             try {
                 await deleteGitHubRepo(demo.github_repo_url, githubToken as string);
                 console.log('✅ GitHub repository deleted successfully');
@@ -207,6 +328,90 @@ app.delete('/delete-demo', async (req, res) => {
         console.error('Error deleting demo:', error);
         res.status(500).json({
             error: 'Failed to delete demo',
+            details: error instanceof Error ? error.message : 'Unknown error'
+        });
+    }
+});
+
+// Test Vercel API connection
+app.get('/test-vercel', async (req, res) => {
+    try {
+        const vercelToken = process.env.VERCEL_TOKEN;
+        const teamId = process.env.VERCEL_TEAM_ID;
+
+        if (!vercelToken) {
+            return res.status(400).json({
+                error: 'VERCEL_TOKEN not set'
+            });
+        }
+
+        console.log('🧪 Testing Vercel API connection...');
+        console.log('🔑 Team ID:', teamId || 'none (personal account)');
+
+        let projects: any[] = [];
+        let endpointUsed = '';
+
+        // Try team endpoint first
+        if (teamId) {
+            try {
+                const teamResponse = await fetch(`https://api.vercel.com/v9/teams/${teamId}/projects`, {
+                    headers: {
+                        'Authorization': `Bearer ${vercelToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (teamResponse.ok) {
+                    const data = await teamResponse.json() as any;
+                    projects = data.projects || [];
+                    endpointUsed = 'team';
+                    console.log('✅ Team endpoint successful');
+                } else {
+                    console.log('⚠️ Team endpoint failed:', teamResponse.status, teamResponse.statusText);
+                }
+            } catch (error) {
+                console.log('⚠️ Team endpoint error:', error);
+            }
+        }
+
+        // Try personal account endpoint
+        if (projects.length === 0) {
+            try {
+                const personalResponse = await fetch('https://api.vercel.com/v9/projects', {
+                    headers: {
+                        'Authorization': `Bearer ${vercelToken}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (personalResponse.ok) {
+                    const data = await personalResponse.json() as any;
+                    projects = data.projects || [];
+                    endpointUsed = 'personal';
+                    console.log('✅ Personal endpoint successful');
+                } else {
+                    console.log('⚠️ Personal endpoint failed:', personalResponse.status, personalResponse.statusText);
+                }
+            } catch (error) {
+                console.log('⚠️ Personal endpoint error:', error);
+            }
+        }
+
+        res.json({
+            success: projects.length > 0,
+            endpointUsed,
+            projectCount: projects.length,
+            projects: projects.map((p: any) => ({
+                name: p.name,
+                id: p.id,
+                framework: p.framework
+            }))
+        });
+
+    } catch (error) {
+        console.error('Error testing Vercel API:', error);
+        res.status(500).json({
+            error: 'Failed to test Vercel API',
             details: error instanceof Error ? error.message : 'Unknown error'
         });
     }
@@ -277,11 +482,13 @@ async function deleteVercelDeployments(demo: any) {
         if (frontendProject) {
             console.log(`🗑️ Deleting Vercel frontend project: ${frontendProject}`);
             await deleteVercelProject(frontendProject, vercelToken);
+            console.log(`✅ Frontend project deleted: ${frontendProject}`);
         }
 
         if (backendProject) {
             console.log(`🗑️ Deleting Vercel backend project: ${backendProject}`);
             await deleteVercelProject(backendProject, vercelToken);
+            console.log(`✅ Backend project deleted: ${backendProject}`);
         }
 
         if (!frontendProject && !backendProject) {
@@ -306,28 +513,136 @@ function extractProjectNameFromUrl(url: string): string | null {
 // Helper function to delete a Vercel project
 async function deleteVercelProject(projectName: string, token: string) {
     try {
-        // First, get the project ID
-        const projectResponse = await fetch(`https://api.vercel.com/v9/projects?search=${projectName}`, {
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            }
-        });
+        const teamId = process.env.VERCEL_TEAM_ID;
 
-        if (!projectResponse.ok) {
-            throw new Error(`Failed to fetch Vercel project: ${projectResponse.statusText}`);
+        console.log(`🔍 Attempting to fetch Vercel projects...`);
+        console.log(`🔑 Using team ID: ${teamId || 'none (personal account)'}`);
+
+        // Try multiple API endpoints to find the right one
+        let projects: any[] = [];
+        let projectsResponse: Response;
+        let endpointType: 'team' | 'personal' = 'personal'; // Track which endpoint worked
+
+        // First, try with team ID if available
+        if (teamId) {
+            try {
+                console.log(`🔍 Trying team endpoint: https://api.vercel.com/v9/teams/${teamId}/projects`);
+                projectsResponse = await fetch(`https://api.vercel.com/v9/teams/${teamId}/projects`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (projectsResponse.ok) {
+                    const projectsData = await projectsResponse.json() as any;
+                    projects = projectsData.projects || [];
+                    endpointType = 'team';
+                    console.log(`✅ Team endpoint successful, found ${projects.length} projects`);
+                } else {
+                    console.log(`⚠️ Team endpoint failed: ${projectsResponse.status} ${projectsResponse.statusText}`);
+                }
+            } catch (error) {
+                console.log(`⚠️ Team endpoint error: ${error}`);
+            }
         }
 
-        const projects = await projectResponse.json() as any;
-        const project = projects.projects?.find((p: any) => p.name === projectName);
+        // If team endpoint failed or no team ID, try personal account
+        if (projects.length === 0) {
+            try {
+                console.log(`🔍 Trying personal account endpoint: https://api.vercel.com/v9/projects`);
+                projectsResponse = await fetch(`https://api.vercel.com/v9/projects`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (projectsResponse.ok) {
+                    const projectsData = await projectsResponse.json() as any;
+                    projects = projectsData.projects || [];
+                    endpointType = 'personal';
+                    console.log(`✅ Personal account endpoint successful, found ${projects.length} projects`);
+                } else {
+                    console.log(`⚠️ Personal account endpoint failed: ${projectsResponse.status} ${projectsResponse.statusText}`);
+                    console.log(`📋 Response body:`, await projectsResponse.text());
+                    throw new Error(`Failed to fetch Vercel projects: ${projectsResponse.status} ${projectsResponse.statusText}`);
+                }
+            } catch (error) {
+                console.log(`⚠️ Personal account endpoint error: ${error}`);
+                throw new Error(`Failed to fetch Vercel projects: ${error}`);
+            }
+        }
+
+        console.log(`🔍 Using ${endpointType} endpoint for operations`);
+
+        console.log(`🔍 Searching for project: ${projectName}`);
+        console.log(`📋 Available projects:`, projects.map((p: any) => p.name));
+
+        // Try exact match first
+        let project = projects.find((p: any) => p.name === projectName);
+
+        // If not found, try partial match
+        if (!project) {
+            console.log(`🔍 Exact match not found, trying partial match...`);
+            project = projects.find((p: any) => p.name.includes(projectName) || projectName.includes(p.name));
+        }
+
+        // If still not found, try matching by customer name
+        if (!project) {
+            console.log(`🔍 Partial match not found, trying customer name match...`);
+            const customerName = projectName.split('-').slice(2, -2).join('-'); // Extract customer name
+            if (customerName) {
+                project = projects.find((p: any) => p.name.includes(customerName));
+            }
+        }
 
         if (!project) {
-            console.log(`Project ${projectName} not found in Vercel`);
+            console.log(`❌ Project ${projectName} not found in Vercel`);
+            console.log(`📋 Available projects:`, projects.map((p: any) => p.name));
+
+            // Try to delete by name directly as a fallback
+            console.log(`🔄 Trying direct deletion by name as fallback...`);
+            try {
+                const directDeleteUrl = endpointType === 'team' && teamId
+                    ? `https://api.vercel.com/v9/teams/${teamId}/projects/${projectName}`
+                    : `https://api.vercel.com/v9/projects/${projectName}`;
+
+                console.log(`🔗 Direct delete URL: ${directDeleteUrl} (using ${endpointType} endpoint)`);
+
+                const directDeleteResponse = await fetch(directDeleteUrl, {
+                    method: 'DELETE',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                if (directDeleteResponse.ok) {
+                    console.log(`✅ Successfully deleted Vercel project by name: ${projectName}`);
+                    return;
+                } else {
+                    console.log(`⚠️ Direct deletion failed: ${directDeleteResponse.status} ${directDeleteResponse.statusText}`);
+                    const errorText = await directDeleteResponse.text();
+                    console.log(`📋 Error response: ${errorText}`);
+                }
+            } catch (directError) {
+                console.log(`⚠️ Direct deletion error: ${directError}`);
+            }
+
             return;
         }
 
-        // Delete the project
-        const deleteResponse = await fetch(`https://api.vercel.com/v9/projects/${project.id}`, {
+        console.log(`✅ Found project: ${project.name} (ID: ${project.id})`);
+
+        // Delete the project using the same endpoint type that worked for fetching
+        const deleteUrl = endpointType === 'team' && teamId
+            ? `https://api.vercel.com/v9/teams/${teamId}/projects/${project.id}`
+            : `https://api.vercel.com/v9/projects/${project.id}`;
+
+        console.log(`🔗 Delete URL: ${deleteUrl} (using ${endpointType} endpoint)`);
+
+        const deleteResponse = await fetch(deleteUrl, {
             method: 'DELETE',
             headers: {
                 'Authorization': `Bearer ${token}`,
@@ -336,7 +651,9 @@ async function deleteVercelProject(projectName: string, token: string) {
         });
 
         if (!deleteResponse.ok) {
-            throw new Error(`Failed to delete Vercel project: ${deleteResponse.statusText}`);
+            const errorText = await deleteResponse.text();
+            console.log(`📋 Delete response error: ${errorText}`);
+            throw new Error(`Failed to delete Vercel project: ${deleteResponse.status} ${deleteResponse.statusText}`);
         }
 
         console.log(`✅ Successfully deleted Vercel project: ${projectName}`);
